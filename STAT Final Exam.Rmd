@@ -1,0 +1,426 @@
+---
+title: "STAT_MS_FinalExam"
+author: "Derek Liu (hdl5hz)"
+date: "4/21/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+library(lubridate)
+library(dplyr)
+library(astsa)
+library(reshape2)
+library(ggfortify)
+library(forecast)
+library(zoo)
+```
+
+
+## uci ##
+```{r}
+# https://archive.ics.uci.edu/ml/datasets/Beijing+Multi-Site+Air-Quality+Data
+```
+
+
+## Import Files
+
+```{r}
+beijing <-
+    list.files(path = "PRSA_Data_20130301-20170228/",
+               pattern = "*.csv", 
+               full.names = T) %>% 
+    map_df(~read_csv(., col_types = cols(.default = "c"))) 
+
+head(beijing)
+```
+
+```{r}
+beijing$date <- ymd_h(paste(beijing$year, beijing$month, beijing$day, beijing$hour))
+beijing_final <- beijing[order(beijing$date),]
+beijing_final[,c(6:15,17)] <- sapply(beijing_final[,c(6:15,17)], as.numeric)
+range(beijing_final$date)
+```
+
+```{r}
+sum(is.na(beijing))
+colSums(is.na(beijing_final))
+```
+
+```{r}
+beijing_pollutants <- beijing_final[,c("PM2.5", "PM10", "SO2", "NO2", "CO", "O3")]
+na_df<-data.frame(percent=round(colSums(is.na(beijing_pollutants))/nrow(beijing_pollutants)*100, digits = 2))
+na_df$poll <- rownames(na_df)
+na_df$pollutant<-factor(na_df$poll, as.character(na_df$poll))
+
+ggplot(na_df, aes(pollutant, percent, fill=pollutant)) +
+  geom_bar(stat="identity") +
+  scale_fill_manual(values = c("#E57200","#232D4B","#E57200","#232D4B","#E57200","#232D4B"))+
+  geom_text(data=na_df, aes(label=paste0(percent,"%"),
+                               y=percent+0.7), size=4)+
+ labs(x = "Pollutants", y = "Percentage", 
+         title = "NA Percentage in Air Pollutants") +
+  theme(legend.position = "none")
+```
+```{r}
+summary(beijing_pollutants)
+```
+
+```{r}
+beijing_melt <- melt(beijing_final, id.vars='date', measure.vars=c("PM2.5", "PM10", "SO2", "NO2", "O3", "CO"))
+ggplot(na.omit(beijing_melt),aes(x=variable, y=value, color=variable)) +
+  geom_boxplot()+ 
+  coord_flip()+
+  scale_colour_manual(values=c("#E57200","#232D4B","#E57200","#232D4B","#E57200", "#232D4B"))+
+  theme(legend.position="none")+
+  scale_y_continuous(breaks = seq(0, 1200, by = 100))+
+  labs(title="Distribution of Pollutants",x='Pollutants',y='ug/m3')
+```
+
+```{r}
+beijing_melt <- melt(beijing_final, id.vars='date', measure.vars=c("PM2.5", "PM10", "SO2", "NO2", "O3"))
+ggplot(na.omit(beijing_melt),aes(x=variable, y=value, color=variable)) +
+  geom_boxplot()+ 
+  coord_flip()+
+  scale_colour_manual(values=c("#E57200","#232D4B","#E57200","#232D4B","#E57200"))+
+  theme(legend.position="none")+
+  scale_y_continuous(breaks = seq(0, 1200, by = 100))+
+  labs(title="Distribution of Pollutants",x='Pollutants',y='ug/m3')
+```
+
+
+```{r}
+max_pollutants_per_day <- beijing_final %>%
+  as.data.frame %>%
+  select("date","PM2.5", "PM10", "SO2", "NO2", "O3")%>%
+  mutate(date_ymd=as.Date(date,format="%Y-%m-%d"))%>%
+  group_by(date_ymd)%>%
+  summarise(PM2.5=max(PM2.5,na.rm=TRUE),
+            PM10=max(PM10,na.rm=TRUE),
+            SO2=max(SO2,na.rm=TRUE),
+            NO2=max(NO2,na.rm=TRUE),
+            O3=max(O3,na.rm=TRUE))
+max_pollutants_df <- as.data.frame(max_pollutants_per_day)
+melt_beijing_max_pollutants <- melt(max_pollutants_df,id.vars='date_ymd', 
+                                    measure.vars=c("PM2.5", "PM10", "SO2", "NO2", "O3"))
+ggplot(melt_beijing_max_pollutants, aes(x=variable, y=value, color=variable)) +
+  geom_boxplot()+ 
+  coord_flip()+
+  scale_colour_manual(values=c("#E57200","#232D4B","#E57200","#232D4B","#E57200"))+
+  theme(legend.position="none")+
+  scale_y_continuous(breaks = seq(0, 1200, by = 100))+
+  labs(title="Distribution of Pollutants on Monthly Max Values",x='Pollutants',y='ug/m3')
+```
+```{r}
+mean_pollutants_per_day <- beijing_final %>%
+  as.data.frame %>%
+  select("date","PM2.5", "PM10", "SO2", "NO2", "O3")%>%
+  mutate(date_ymd=as.Date(date,format="%Y-%m-%d"))%>%
+  group_by(date_ymd)%>%
+  summarise(PM2.5=mean(PM2.5,na.rm=TRUE),
+            PM10=mean(PM10,na.rm=TRUE),
+            SO2=mean(SO2,na.rm=TRUE),
+            NO2=mean(NO2,na.rm=TRUE),
+            O3=mean(O3,na.rm=TRUE))
+mean_pollutants_df <- as.data.frame(mean_pollutants_per_day)
+melt_beijing_mean_pollutants <- melt(mean_pollutants_df,id.vars='date_ymd', 
+                                    measure.vars=c("PM2.5", "PM10", "SO2", "NO2", "O3"))
+ggplot(melt_beijing_mean_pollutants, aes(x=variable, y=value, color=variable)) +
+  geom_boxplot()+ 
+  coord_flip()+
+  scale_colour_manual(values=c("#E57200","#232D4B","#E57200","#232D4B","#E57200"))+
+  theme(legend.position="none")+
+  scale_y_continuous(breaks = seq(0, 1200, by = 100))+
+  labs(title="Distribution of Pollutants on Monthly Mean Values",x='Pollutants',y='ug/m3')
+```
+```{r}
+median_pollutants_per_day <- beijing_final %>%
+  as.data.frame %>%
+  select("date","PM2.5", "PM10", "SO2", "NO2", "O3")%>%
+  mutate(date_ymd=as.Date(date,format="%Y-%m-%d"))%>%
+  group_by(date_ymd)%>%
+  summarise(PM2.5=median(PM2.5,na.rm=TRUE),
+            PM10=median(PM10,na.rm=TRUE),
+            SO2=median(SO2,na.rm=TRUE),
+            NO2=median(NO2,na.rm=TRUE),
+            O3=median(O3,na.rm=TRUE))
+median_pollutants_df <- as.data.frame(median_pollutants_per_day)
+melt_beijing_median_pollutants <- melt(median_pollutants_df,id.vars='date_ymd', 
+                                    measure.vars=c("PM2.5", "PM10", "SO2", "NO2", "O3"))
+ggplot(melt_beijing_median_pollutants, aes(x=variable, y=value, color=variable)) +
+  geom_boxplot()+ 
+  coord_flip()+
+  scale_colour_manual(values=c("#E57200","#232D4B","#E57200","#232D4B","#E57200"))+
+  theme(legend.position="none")+
+  scale_y_continuous(breaks = seq(0, 1200, by = 100))+
+  labs(title="Distribution of Pollutants on Monthly Median Values",x='Pollutants',y='ug/m3')
+```
+```{r}
+plot.ts(max_pollutants_per_day$PM2.5)
+title(main = "Time Series of Max PM2.5 Level per Day")
+plot.ts(max_pollutants_per_day$PM10)
+plot.ts(max_pollutants_per_day$SO2)
+plot.ts(max_pollutants_per_day$NO2)
+plot.ts(max_pollutants_per_day$O3)
+```
+```{r}
+mean_pollutants_per_month <- beijing_final %>%
+  as.data.frame %>%
+  select("date","PM2.5", "PM10", "SO2", "NO2", "O3")%>%
+  mutate(date_ym = format(as.Date(date),"%Y-%m"))%>%
+  group_by(date_ym)%>%
+  summarise(PM2.5=mean(PM2.5,na.rm=TRUE),
+            PM10=mean(PM10,na.rm=TRUE),
+            SO2=mean(SO2,na.rm=TRUE),
+            NO2=mean(NO2,na.rm=TRUE),
+            O3=mean(O3,na.rm=TRUE))
+```
+```{r}
+plot.ts(mean_pollutants_per_month$PM2.5)
+plot.ts(mean_pollutants_per_month$PM10)
+plot.ts(mean_pollutants_per_month$SO2)
+plot.ts(mean_pollutants_per_month$NO2)
+plot.ts(mean_pollutants_per_month$O3)
+```
+```{r}
+max_pollutants_per_month <- beijing_final %>%
+  as.data.frame %>%
+  select("date","PM2.5", "PM10", "SO2", "NO2", "O3")%>%
+  mutate(date_ym = format(as.Date(date),"%Y-%m"))%>%
+  group_by(date_ym)%>%
+  summarise(PM2.5=max(PM2.5,na.rm=TRUE),
+            PM10=max(PM10,na.rm=TRUE),
+            SO2=max(SO2,na.rm=TRUE),
+            NO2=max(NO2,na.rm=TRUE),
+            O3=max(O3,na.rm=TRUE))
+```
+```{r}
+plot.ts(max_pollutants_per_month$PM2.5)
+plot.ts(max_pollutants_per_month$PM10)
+plot.ts(max_pollutants_per_month$SO2)
+plot.ts(max_pollutants_per_month$NO2)
+plot.ts(max_pollutants_per_month$O3)
+```
+```{r}
+mean_of_max_pollutants_per_month <- max_pollutants_per_day %>%
+  as.data.frame %>%
+  select("date_ymd","PM2.5", "PM10", "SO2", "NO2", "O3")%>%
+  mutate(date_ym = format(as.Date(date_ymd),"%Y-%m"))%>%
+  group_by(date_ym)%>%
+  summarise(PM2.5=mean(PM2.5,na.rm=TRUE),
+            PM10=mean(PM10,na.rm=TRUE),
+            SO2=mean(SO2,na.rm=TRUE),
+            NO2=mean(NO2,na.rm=TRUE),
+            O3=mean(O3,na.rm=TRUE))
+```
+```{r}
+plot.ts(mean_pollutants_per_month$PM2.5)
+plot.ts(mean_of_max_pollutants_per_month$PM2.5)
+```
+
+```{r}
+pm2.5ts <- ts(mean_of_max_pollutants_per_month$PM2.5, frequency = 12, start=c(2013,01))
+plot.ts(pm2.5ts)
+autoplot(pm2.5ts,ts.colour ="#232D4B") + 
+  xlab('Time')+
+  ylab('Level')+
+  ggtitle('Time Series of PM2.5 Average Monthly Level of Maximum Daily Value')
+```
+```{r}
+pm2.5_decompose <- decompose(pm2.5ts)
+plot(pm2.5_decompose)
+```
+```{r}
+train_ts<-ts(pm2.5ts, frequency = 12)
+train_pol_fit_arima<-auto.arima(diff(diff(log(pm2.5ts), lag=6)))
+train_pol_fit_arima
+```
+```{r}
+train_forecast_arima<-forecast(train_pol_fit_arima, 48)
+train_forecast_arima_df<-data.frame(train_forecast_arima)
+train_forecast_arima_pt_forecast<-train_forecast_arima_df$Point.Forecast
+plot.ts(train_forecast_arima_pt_forecast)
+```
+
+```{r}
+pm2.5real <- pm2.5ts
+pm2.5pred <- train_forecast_arima$fitted
+ts.plot(pm2.5real, pm2.5pred, gpars = list(col = c("black", "red")))
+```
+```{r}
+plot.ts(diff(log(pm2.5ts), lag=6))
+acf2(diff(diff(log(pm2.5ts), lag=6)))
+acf2(pm2.5ts, 24)
+sarima(diff(diff(log(pm2.5ts), lag=6)), 0,1,0,0,1,1,12)
+```
+
+```{r}
+mean_of_max_pollutants_per_week <- max_pollutants_per_day %>%
+  as.data.frame %>%
+  select("date_ymd","PM2.5", "PM10", "SO2", "NO2", "O3")%>%
+  mutate(week = as.numeric(date_ymd-date_ymd[1]) %/% 7)%>%
+  group_by(week)%>%
+  summarise(PM2.5=mean(PM2.5,na.rm=TRUE),
+            PM10=mean(PM10,na.rm=TRUE),
+            SO2=mean(SO2,na.rm=TRUE),
+            NO2=mean(NO2,na.rm=TRUE),
+            O3=mean(O3,na.rm=TRUE))
+```
+
+```{r}
+week.ts <- ts(mean_of_max_pollutants_per_week$PM2.5, frequency = 52, start=c(2013,01))
+plot(decompose(diff(log(week.ts))))
+```
+
+```{r}
+plot.ts(week.ts)
+acf2(week.ts)
+```
+
+```{r}
+plot.ts(log(week.ts))
+acf2(log(week.ts))
+```
+```{r}
+plot.ts(log(week.ts))
+acf2(log(week.ts))
+```
+```{r}
+plot.ts(diff(log(week.ts)))
+acf(diff(log(week.ts)))
+```
+
+
+```{r}
+auto.arima(diff(log(week.ts)))
+```
+
+```{r}
+sarima(diff(log(week.ts)), 0,0,1, 0,0,1,52)
+```
+```{r}
+train_pol_fit_arima <- auto.arima(log(week.ts))
+train_forecast_arima<-forecast(train_pol_fit_arima, 52)
+train_forecast_arima_df<-data.frame(train_forecast_arima)
+train_forecast_arima_pt_forecast<-train_forecast_arima_df$Point.Forecast
+autoplot(train_forecast_arima) + labs(x = "Time", y = "PM2.5 (ug/m3)", title = "Forecast of PM2.5 levels from 2017 - 2018")
+```
+
+```{r}
+sarima.for(diff(log(week.ts)),52,0,0,1,0,0,1,52)
+```
+```{r}
+model <- Arima(log(week.ts), order = c(1,0,1), seasonal = list(order = c(0,0,1), period = 52))
+checkresiduals(model)
+```
+
+
+## acicn ##
+```{r}
+#https://aqicn.org/data-platform/covid19/verify/9b863a87-e2c1-4fb2-b164-6b1122e548ed
+```
+
+```{r}
+aqicn <-
+    list.files(path = "waqi/",
+               pattern = "*.csv",
+               full.names = T) %>%
+    map_df(~read_csv(., skip = 4, col_types = cols(.default = "c")))
+unique(aqicn$Specie)
+```
+
+
+```{r}
+aqicn2 <- aqicn[aqicn$City == "Beijing",]
+aqicn25 <- aqicn2[aqicn2$Specie == "pm25",]
+beijing25uniq <- aqicn25[!duplicated(aqicn25),]
+beijing25uniq[c(5,6,7,8,9)] <- sapply(beijing25uniq[c(5,6,7,8,9)],as.numeric)
+beijing25uniq$Date <- as.Date(beijing25uniq$Date)
+beijing25uniq <- beijing25uniq[order(beijing25uniq$Date),]
+summary(beijing25uniq$max)
+```
+
+```{r}
+beijingprecip <- beijing[beijing$Specie == "precipitation",]
+beijingprecip2 <- beijingprecip[!duplicated(beijingprecip),]
+beijingprecip2$Date <- as.Date(beijingprecip2$Date)
+beijing_rain_pm25 <- left_join(beijing25uniq, beijingprecip2, by = "Date")
+beijing_rain_pm25$median.y[is.na(beijing_rain_pm25$median.y)] <- 0
+```
+
+
+```{r}
+plot(beijing_rain_pm25$median.x~beijing_rain_pm25$median.y)
+```
+```{r}
+beijingtemp <- beijing[beijing$Specie == "temperature",]
+beijingtemp2 <- beijingtemp[!duplicated(beijingtemp),]
+beijingtemp2$Date <- as.Date(beijingtemp2$Date)
+beijing_temp_pm25 <- left_join(beijing25uniq, beijingtemp2, by = "Date")
+```
+
+```{r}
+plot(beijing_temp_pm25$median.x~beijing_temp_pm25$median.y)
+```
+
+```{r}
+
+```
+
+
+
+```{r}
+pm2.5median <- beijing25uniq$median
+plot.ts(pm2.5median)
+```
+
+
+```{r}
+logpm2.5 <- log(beijing25uniq$median)
+plot.ts(logpm2.5)
+```
+
+
+```{r}
+diffpm2.5 <- diff(beijing25uniq$median)
+plot.ts(diffpm2.5)
+```
+
+
+```{r}
+diff2pm2.5 <- diff(diff(beijing25uniq$median))
+plot.ts(diff2pm2.5)
+```
+
+
+```{r}
+absdiffpm2.5 <- abs(diff(beijing25uniq$median))
+plot.ts(absdiffpm2.5)
+```
+
+
+```{r}
+logabsdiffpm2.5 <- log(abs(diff(beijing25uniq$median)))
+plot.ts(logabsdiffpm2.5)
+```
+
+
+```{r}
+median_decomp <- decompose(ts(as.numeric(beijing25uniq$median), frequency = 365/24))
+plot(median_decomp)
+acf(beijing25uniq$median)
+```
+
+
+```{r}
+acf2(ts(as.numeric(beijing25uniq$median), frequency = 365/25))
+```
+
+```{r}
+res <- lm(beijing25uniq$median~beijing25uniq$Date)
+acf2(res$residuals)
+```
+
+
